@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Peta Mahasiswa Otomatis</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- #leaflet-css -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <style>
+        /* #style-peta */
+        body {
+            margin: 0;
+            font-family: sans-serif;
+        }
+
+        #map {
+            height: 100vh;
+        }
+
+        /* #style-tooltip-label */
+        .label-nama {
+            background-color: white;
+            padding: 6px 10px;
+            border-radius: 9px;
+            font-size: 13px;
+            border: 1px solid #888;
+            max-width: 200px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
+            text-align: center;
+            pointer-events: none;
+            /* #non-interaktif */
+        }
+
+        /* #style-popup */
+        .popup-content {
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+
+    <!-- #leaflet-js -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        // #inisialisasi-peta
+        const map = L.map('map', {
+            center: [-2.5, 118], // #tengah-indonesia
+            zoom: 2,
+            minZoom: 5.5,
+            maxZoom: 10,
+            maxBounds: [
+                [-12, 94],
+                [7, 142]
+            ], // #batasi-ke-indonesia
+            maxBoundsViscosity: 1.0
+        });
+
+        // #peta-tiles
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; CartoDB',
+            subdomains: 'abcd',
+            maxZoom: 19
+        }).addTo(map);
+
+        // #variabel-global
+        const centroidKota = {}; // #koordinat-tengah-kota
+        const dataPerKota = {}; // #data-nama-mahasiswa-per-kota
+        const blueMarkers = {}; // #penanda-marker-biru
+        let activeMarker = null; // #marker-merah-saat-klik
+        let lastClickedCity = null; // #kota-yang-terakhir-diklik
+
+        // #ikon-marker
+        const redIcon = new L.Icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+            shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41], // <== Perbaiki anchor horizontal ke tengah
+            popupAnchor: [0, -36], // <== Popup tepat di atas marker
+            shadowSize: [41, 41]
+        });
+
+        const blueIcon = new L.Icon({
+            iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+            shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41], // <== Sama seperti di atas
+            popupAnchor: [0, -36],
+            shadowSize: [41, 41]
+        });
+
+
+        // #ambil-data-mahasiswa-dari-Google-Sheet
+        fetch('https://script.google.com/macros/s/AKfycbxoxEiSbywlrXYH3-yGoDCwLabJFwHAv04Qps57TuJZPpHoxMeFwV4BxX5yCMJW6Gs99Q/exec')
+            .then(res => res.json())
+            .then(data => {
+                const mahasiswaList = Array.isArray(data) ? data : Object.values(data);
+
+                mahasiswaList.forEach(m => {
+                    const kota = m["Kota/Kabupaten"];
+                    const nama = m["Nama Mahasiswa"];
+                    if (!kota || !nama) return;
+
+                    if (!dataPerKota[kota]) dataPerKota[kota] = [];
+                    dataPerKota[kota].push(nama);
+                });
+
+                loadGeoJSON();
+            });
+
+        // #fungsi-untuk-load-peta-geojson
+        function loadGeoJSON() {
+            fetch('https://cdn.glitch.global/6d021ea8-020c-4a5b-ba9a-f738689e50c5/gadm41_IDN_2.json?v=1749581756034')
+                .then(res => res.json())
+                .then(geojson => {
+                    L.geoJSON(geojson, {
+                        style: () => ({
+                            fillOpacity: 0,
+                            color: "#888",
+                            weight: 1
+                        }),
+                        onEachFeature: function(feature, layer) {
+                            const kota = feature.properties.NAME_2;
+                            const center = layer.getBounds().getCenter();
+                            centroidKota[kota] = center;
+                            const list = dataPerKota[kota];
+
+                            // #tampilkan-marker-biru-dengan-tooltip
+                            if (list) {
+                                const tooltipHTML = list.map(n => `• ${n}`).join("<br>");
+                                const marker = L.marker(center, {
+                                    icon: blueIcon
+                                }).addTo(map);
+                                marker.bindTooltip(tooltipHTML, {
+                                    permanent: true,
+                                    direction: 'top',
+                                    offset: [1, -35],
+                                    className: 'label-nama',
+                                    interactive: false
+                                }).openTooltip();
+                                blueMarkers[kota] = marker;
+                            }
+
+                            // #event-klik-pada-poligon-kota
+                            layer.on('click', function(e) {
+                                L.DomEvent.stopPropagation(e);
+
+                                // #hapus-popup-merah-sebelumnya
+                                if (activeMarker) {
+                                    map.removeLayer(activeMarker);
+                                    activeMarker = null;
+                                }
+
+                                // #kembalikan-marker-biru-kota-terakhir-diklik
+                                if (lastClickedCity && dataPerKota[lastClickedCity] && !blueMarkers[lastClickedCity]) {
+                                    const prevCenter = centroidKota[lastClickedCity];
+                                    const prevList = dataPerKota[lastClickedCity];
+                                    const tooltipHTML = prevList.map(n => `• ${n}`).join("<br>");
+                                    const prevMarker = L.marker(prevCenter, {
+                                        icon: blueIcon
+                                    }).addTo(map);
+                                    prevMarker.bindTooltip(tooltipHTML, {
+                                        permanent: true,
+                                        direction: 'top',
+                                        offset: [1, -35],
+                                        className: 'label-nama',
+                                        interactive: false
+                                    }).openTooltip();
+                                    blueMarkers[lastClickedCity] = prevMarker;
+                                }
+
+                                // #hapus-marker-biru-kota-saat-ini
+                                if (blueMarkers[kota]) {
+                                    map.removeLayer(blueMarkers[kota]);
+                                    delete blueMarkers[kota];
+                                }
+
+                                // #buat-popup-merah-baru
+                                const popupHTML = `
+                  <div class="popup-content">
+                    <b>${kota}</b><br>
+                    ${list ? `Jumlah mahasiswa<br>yang berasal dari kota ini ada : <b>${list.length}</b><br><hr>${list.map(n => `• ${n}`).join("<br>")}` : `<i>Tidak ada mahasiswa yang berasal dari kota ini.</i>`}
+                  </div>
+                `;
+                                activeMarker = L.marker(center, {
+                                    icon: redIcon
+                                }).addTo(map).bindPopup(popupHTML).openPopup();
+                                lastClickedCity = kota;
+                            });
+                        }
+                    }).addTo(map);
+
+                    // #event-klik-pada-area-kosong-peta
+                    map.on('click', function() {
+                        if (activeMarker) {
+                            map.removeLayer(activeMarker);
+                            activeMarker = null;
+                        }
+                        lastClickedCity = null;
+
+                        // #kembalikan-semua-marker-biru-yang-hilang
+                        for (const kota in dataPerKota) {
+                            if (!blueMarkers[kota]) {
+                                const center = centroidKota[kota];
+                                const list = dataPerKota[kota];
+                                const tooltipHTML = list.map(n => `• ${n}`).join("<br>");
+                                const marker = L.marker(center, {
+                                    icon: blueIcon
+                                }).addTo(map);
+                                marker.bindTooltip(tooltipHTML, {
+                                    permanent: true,
+                                    direction: 'top',
+                                    offset: [1, -35],
+                                    className: 'label-nama',
+                                    interactive: false
+                                }).openTooltip();
+                                blueMarkers[kota] = marker;
+                            }
+                        }
+                    });
+                });
+        }
+    </script>
+</body>
+
+</html>
